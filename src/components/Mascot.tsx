@@ -3,7 +3,7 @@ import React from 'react';
 
 interface MascotProps {
   message: string;
-  type?: 'info' | 'alert' | 'success';
+  type?: 'info' | 'alert' | 'success' | 'welcome';
 }
 
 const Mascot: React.FC<MascotProps> = ({ message, type = 'info' }) => {
@@ -13,6 +13,8 @@ const Mascot: React.FC<MascotProps> = ({ message, type = 'info' }) => {
         return 'bg-amber-100';
       case 'success':
         return 'bg-green-100';
+      case 'welcome':
+        return 'bg-purple-100';
       default:
         return 'bg-blue-100';
     }
@@ -24,6 +26,8 @@ const Mascot: React.FC<MascotProps> = ({ message, type = 'info' }) => {
         return 'text-amber-700';
       case 'success':
         return 'text-green-700';
+      case 'welcome':
+        return 'text-purple-700';
       default:
         return 'text-blue-700';
     }
