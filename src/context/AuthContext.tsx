@@ -51,7 +51,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // Handle auth redirects
         if (event === 'SIGNED_IN' && window.location.pathname === '/auth') {
-          navigate('/');
+          navigate('/dashboard');
         } else if (event === 'SIGNED_OUT') {
           navigate('/auth');
         }
