@@ -1,9 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import TimeSlot from './TimeSlot';
 import Mascot from './Mascot';
 import { Button } from '@/components/ui/button';
-import { format, addDays, subDays, startOfDay, isToday, isTomorrow } from 'date-fns';
+import { format, addDays, subDays, startOfDay, isToday, isTomorrow, parseISO } from 'date-fns';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Calendar } from "@/components/ui/calendar";
@@ -12,33 +12,35 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/context/AuthContext';
 
-// Mock data for time slots
-const generateMockSlots = (date: Date) => {
-  const isWeekend = [0, 6].includes(date.getDay());
-  const timeSlots = [];
+interface Slot {
+  time: string;
+  formattedHour: number;
+  period: string;
+  available: boolean;
+  price: number;
+  spotsLeft: number;
+}
+
+// Generate all possible time slots
+const generateTimeSlots = () => {
+  const timeSlots: Slot[] = [];
   
   // Start at 6 AM, end at 10 PM
   for (let hour = 6; hour <= 22; hour++) {
     const formattedHour = hour % 12 === 0 ? 12 : hour % 12;
     const period = hour < 12 ? 'AM' : 'PM';
     
-    // More likely to be booked during peak hours (6-9 PM)
-    let randomAvailability = Math.random();
-    const isPeakHour = hour >= 18 && hour <= 21;
-    const isBookedAlready = isPeakHour ? randomAvailability > 0.3 : randomAvailability > 0.7;
-    
-    // For demo purposes, make weekends more booked
-    const available = isWeekend ? randomAvailability > 0.6 : !isBookedAlready;
-    
-    // Random spots left (1-4)
-    const spotsLeft = Math.floor(Math.random() * 4) + 1;
-    
     timeSlots.push({
       time: `${formattedHour}:00 ${period}`,
-      available,
+      formattedHour,
+      period,
+      available: true, // Default to available
       price: 500, // Fixed price of Rs. 500
-      spotsLeft
+      spotsLeft: 4 // Default spots
     });
   }
   
@@ -47,31 +49,142 @@ const generateMockSlots = (date: Date) => {
 
 const SlotGrid: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const [slots, setSlots] = useState(generateMockSlots(new Date()));
+  const [slots, setSlots] = useState<Slot[]>(generateTimeSlots());
   const [bookingSuccess, setBookingSuccess] = useState(false);
+  const { toast } = useToast();
+  const { user, userProfile } = useAuth();
+  
+  // Fetch booked slots whenever date changes
+  useEffect(() => {
+    fetchBookedSlots(selectedDate);
+  }, [selectedDate]);
+
+  const fetchBookedSlots = async (date: Date) => {
+    try {
+      const formattedDate = format(date, 'yyyy-MM-dd');
+      
+      const { data: bookings, error } = await supabase
+        .from('bookings')
+        .select('start_time')
+        .eq('booking_date', formattedDate);
+        
+      if (error) {
+        console.error('Error fetching booked slots:', error);
+        return;
+      }
+      
+      // Generate fresh slots
+      let updatedSlots = generateTimeSlots();
+      
+      // Mark booked slots as unavailable
+      if (bookings && bookings.length > 0) {
+        updatedSlots = updatedSlots.map(slot => {
+          // Convert slot time (e.g., "6:00 AM") to database format for comparison
+          const hour = slot.period === 'AM' 
+            ? (slot.formattedHour === 12 ? 0 : slot.formattedHour) 
+            : (slot.formattedHour === 12 ? 12 : slot.formattedHour + 12);
+          
+          const slotTimeDb = `${hour.toString().padStart(2, '0')}:00:00`;
+          
+          const isBooked = bookings.some(booking => booking.start_time === slotTimeDb);
+          
+          return {
+            ...slot,
+            available: !isBooked,
+            // If booked, set spotsLeft to 0, otherwise random between 1-4
+            spotsLeft: isBooked ? 0 : Math.floor(Math.random() * 4) + 1
+          };
+        });
+      }
+      
+      setSlots(updatedSlots);
+    } catch (error) {
+      console.error('Failed to fetch booked slots:', error);
+    }
+  };
   
   const handleDateChange = (date: Date | undefined) => {
     if (date) {
       setSelectedDate(date);
-      setSlots(generateMockSlots(date));
     }
   };
   
   const handlePrevDay = () => {
     const newDate = subDays(selectedDate, 1);
     setSelectedDate(newDate);
-    setSlots(generateMockSlots(newDate));
   };
   
   const handleNextDay = () => {
     const newDate = addDays(selectedDate, 1);
     setSelectedDate(newDate);
-    setSlots(generateMockSlots(newDate));
   };
   
-  const handleBookSlot = () => {
-    setBookingSuccess(true);
-    setTimeout(() => setBookingSuccess(false), 3000);
+  const handleBookSlot = async (time: string) => {
+    if (!user) {
+      toast({
+        title: "Authentication required",
+        description: "Please sign in to book a slot",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    try {
+      // Extract hour and period from time string (e.g., "6:00 AM")
+      const [hourMinute, period] = time.split(' ');
+      const [hour] = hourMinute.split(':');
+      const hourNum = parseInt(hour);
+      
+      // Convert to 24-hour format for database
+      const hour24 = period === 'AM' 
+        ? (hourNum === 12 ? 0 : hourNum)
+        : (hourNum === 12 ? 12 : hourNum + 12);
+      
+      const startTime = `${hour24.toString().padStart(2, '0')}:00:00`;
+      const endHour = (hour24 + 1) % 24;
+      const endTime = `${endHour.toString().padStart(2, '0')}:00:00`;
+      
+      const bookingDate = format(selectedDate, 'yyyy-MM-dd');
+      
+      const { error } = await supabase
+        .from('bookings')
+        .insert([
+          {
+            user_id: user.id,
+            booking_date: bookingDate,
+            start_time: startTime,
+            end_time: endTime,
+            payment_method: 'upi', // Default payment method
+            amount: 500
+          }
+        ]);
+        
+      if (error) {
+        if (error.code === '23505') {
+          toast({
+            title: "Booking failed",
+            description: "This slot is already booked. Please select another time.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Booking failed",
+            description: error.message,
+            variant: "destructive",
+          });
+        }
+      } else {
+        setBookingSuccess(true);
+        fetchBookedSlots(selectedDate); // Refresh slots
+        setTimeout(() => setBookingSuccess(false), 3000);
+      }
+    } catch (error: any) {
+      toast({
+        title: "Booking failed",
+        description: error.message || "Something went wrong",
+        variant: "destructive",
+      });
+    }
   };
   
   const getDateLabel = (date: Date) => {
@@ -96,6 +209,7 @@ const SlotGrid: React.FC = () => {
               variant="outline"
               onClick={handlePrevDay}
               className="rounded-full w-10 h-10 p-0"
+              disabled={isToday(selectedDate)}
             >
               <ChevronLeft className="h-4 w-4" />
             </Button>
@@ -118,6 +232,7 @@ const SlotGrid: React.FC = () => {
                   selected={selectedDate}
                   onSelect={handleDateChange}
                   initialFocus
+                  disabled={(date) => date < startOfDay(new Date())}
                   className={cn("p-3 pointer-events-auto")}
                 />
               </PopoverContent>
@@ -145,7 +260,7 @@ const SlotGrid: React.FC = () => {
               available={slot.available}
               price={slot.price}
               spotsLeft={slot.spotsLeft}
-              onBook={handleBookSlot}
+              onBook={() => handleBookSlot(slot.time)}
             />
           ))}
         </div>
